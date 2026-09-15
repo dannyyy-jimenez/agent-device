@@ -3,7 +3,14 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'vitest';
-import { buildBrowserStackCapabilities, uploadBrowserStackApp } from './browserstack.ts';
+import { AppError } from '@agent-device/kernel/errors';
+import {
+  browserStackNetworkLogsUrl,
+  buildBrowserStackCapabilities,
+  fetchBrowserStackNetworkLogs,
+  listBrowserStackCloudArtifacts,
+  uploadBrowserStackApp,
+} from './browserstack.ts';
 
 /**
  * BrowserStack resolves a payload carrying both legacy JSONWP keys and `bstack:options` as JSONWP,
@@ -46,6 +53,93 @@ const realFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = realFetch;
+});
+
+const NETWORK_LOGS_OPTIONS = {
+  clientVersion: '0.0.0-test',
+  username: 'user',
+  accessKey: 'key',
+} as const;
+
+// Network logs are build-scoped on the `api` host, not session-scoped on `api-cloud`. The
+// session-details host answers this path with an HTML 404, which the caller would otherwise report
+// as "networkLogs was not enabled" — a wrong URL misdiagnosed as a missing capability.
+test('network-log HAR URL is build-scoped on the api host', () => {
+  assert.equal(
+    browserStackNetworkLogsUrl('build-9', 'wd-1'),
+    'https://api.browserstack.com/app-automate/builds/build-9/sessions/wd-1/networklogs',
+  );
+  assert.equal(
+    browserStackNetworkLogsUrl('build-9', 'wd-1', 'https://hub.example/app-automate/builds/'),
+    'https://hub.example/app-automate/builds/build-9/sessions/wd-1/networklogs',
+  );
+});
+
+test('fetchBrowserStackNetworkLogs returns the HAR and entry count with basic auth', async () => {
+  const har = { log: { entries: [{ request: {} }, { request: {} }] } };
+  const requestedUrls: string[] = [];
+  let authHeader: string | null | undefined;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requestedUrls.push(url);
+    authHeader = new Headers(init?.headers).get('authorization');
+    // The build id is only known from session details, so the HAR needs that lookup first.
+    return url.endsWith('/networklogs')
+      ? new Response(JSON.stringify(har), { status: 200 })
+      : new Response(JSON.stringify({ automation_session: { build_hashed_id: 'build-9' } }), {
+          status: 200,
+        });
+  };
+
+  const result = await fetchBrowserStackNetworkLogs('wd-1', NETWORK_LOGS_OPTIONS);
+
+  assert.equal(result.entryCount, 2);
+  assert.deepEqual(result.har, har);
+  assert.equal(result.url, browserStackNetworkLogsUrl('build-9', 'wd-1'));
+  assert.ok(requestedUrls.includes(browserStackNetworkLogsUrl('build-9', 'wd-1')));
+  // Credentials ride the request, never the result.
+  assert.equal(authHeader, `Basic ${Buffer.from('user:key').toString('base64')}`);
+});
+
+test('fetchBrowserStackNetworkLogs fails clearly when networkLogs was not enabled', async () => {
+  globalThis.fetch = async (input) =>
+    String(input).endsWith('/networklogs')
+      ? new Response('Not Found', { status: 404 })
+      : new Response(JSON.stringify({ automation_session: { build_hashed_id: 'build-9' } }), {
+          status: 200,
+        });
+
+  await assert.rejects(
+    fetchBrowserStackNetworkLogs('wd-1', NETWORK_LOGS_OPTIONS),
+    (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.equal(error.code, 'COMMAND_FAILED');
+      assert.match(error.message, /networkLogs was not enabled/);
+      assert.match(String(error.details?.hint), /--provider-network-logs/);
+      return true;
+    },
+  );
+});
+
+test('cloud artifacts list advertises the network-log HAR entry', async () => {
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        automation_session: { video_url: 'https://v/1.mp4', build_hashed_id: 'build-9' },
+      }),
+      { status: 200 },
+    );
+
+  const result = await listBrowserStackCloudArtifacts('browserstack', 'wd-1', NETWORK_LOGS_OPTIONS);
+
+  const networkLogs = result?.cloudArtifacts.find(
+    (artifact) => artifact.metadata?.format === 'har',
+  );
+  assert.ok(networkLogs, 'network-log HAR artifact must be listed');
+  assert.equal(networkLogs.kind, 'raw');
+  assert.equal(networkLogs.url, browserStackNetworkLogsUrl('build-9', 'wd-1'));
+  assert.equal(networkLogs.providerSessionId, 'wd-1');
+  assert.equal(networkLogs.metadata?.requiresAuth, true);
 });
 
 test('BrowserStack upload aborts while the provider request is in flight', async () => {

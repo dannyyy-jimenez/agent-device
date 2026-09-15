@@ -126,6 +126,55 @@ test('network dump prints parsed entries and metadata', async () => {
   assert.match(result.stderr, /best-effort parser/);
 });
 
+test('network export writes the BrowserStack HAR to a file with provider credentials', async () => {
+  const tmpDir = await mkdtempForTest('agent-device-network-export-');
+  const outPath = path.join(tmpDir, 'session.har');
+  const har = { log: { entries: [{ request: {} }, { request: {} }] } };
+  const realFetch = globalThis.fetch;
+  let requestedUrl: string | undefined;
+  let authHeader: string | null | undefined;
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    requestedUrl = String(input);
+    authHeader = new Headers(init?.headers).get('authorization');
+    return new Response(JSON.stringify(har), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const result = await runCliCapture(
+      ['network', 'export', '--out', outPath, '--provider-session', 'wd-1'],
+      // Provider session id is explicit, so the export never calls the daemon.
+      async () => ({ ok: true, data: {} }),
+      {
+        env: { BROWSERSTACK_USERNAME: 'user', BROWSERSTACK_ACCESS_KEY: 'key' },
+      },
+    );
+
+    assert.equal(result.code, null);
+    assert.equal(result.calls.length, 0);
+    assert.equal(
+      requestedUrl,
+      'https://api-cloud.browserstack.com/app-automate/sessions/wd-1/networklogs',
+    );
+    assert.equal(authHeader, `Basic ${Buffer.from('user:key').toString('base64')}`);
+    assert.match(result.stdout, /Wrote 2 HAR entries to /);
+    assert.deepEqual(JSON.parse(await fs.readFile(outPath, 'utf8')), har);
+  } finally {
+    globalThis.fetch = realFetch;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('network export fails clearly when BrowserStack credentials are missing', async () => {
+  const result = await runCliCapture(
+    ['network', 'export', '--out', '/tmp/x.har', '--provider-session', 'wd-1'],
+    async () => ({ ok: true, data: {} }),
+    { env: { BROWSERSTACK_USERNAME: undefined, BROWSERSTACK_ACCESS_KEY: undefined } },
+  );
+
+  assert.equal(result.calls.length, 0);
+  assert.match(result.stderr, /BROWSERSTACK_USERNAME and BROWSERSTACK_ACCESS_KEY/);
+});
+
 test('non-json commands opt into generic progress streaming', async () => {
   const result = await runCliCapture(['snapshot'], async () => ({
     ok: true,

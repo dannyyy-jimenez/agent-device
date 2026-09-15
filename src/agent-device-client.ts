@@ -20,6 +20,8 @@ import type {
   FlingOptions,
   InternalRequestOptions,
   MaterializationReleaseOptions,
+  NetworkLogsExportResult,
+  NetworkOptions,
   PanOptions,
   PinchOptions,
   RotateGestureOptions,
@@ -28,7 +30,11 @@ import type {
   SwipeGestureOptions,
   TransformGestureOptions,
 } from '@agent-device/contracts/client';
-import type { AgentArtifactsResult } from '@agent-device/contracts/observability';
+import type {
+  AgentArtifactsResult,
+  CloudArtifact,
+  CloudArtifactsResult,
+} from '@agent-device/contracts/observability';
 import type { MetroPrepareOptions } from '@agent-device/contracts/remote';
 import {
   isNonDefaultResponseLevel,
@@ -414,7 +420,10 @@ export function createAgentDeviceClient(
       perf: async (options) => await executeCommand('perf', options),
       logs: async (options = {}) => await executeCommand('logs', options),
       events: async (options = {}) => await executeCommand('events', options),
-      network: async (options = {}) => await executeCommand('network', options),
+      network: async (options = {}) =>
+        options.action === 'export'
+          ? await exportBrowserStackNetworkLogs(executeCommand, options)
+          : await executeCommand('network', options),
       audio: async (options = {}) => await executeCommand('audio', options),
     },
     debug: {
@@ -432,6 +441,118 @@ export function createAgentDeviceClient(
       update: async (options) => await executeCommand('settings', options),
     },
   };
+}
+
+type ExecuteCommand = <T>(
+  command: DaemonCommandName,
+  options?: InternalRequestOptions,
+) => Promise<T>;
+
+const NETWORK_LOGS_PROVIDER = 'browserstack';
+
+/**
+ * Exports the BrowserStack session network-log HAR to a file.
+ *
+ * The daemon resolves the active lease's provider session id; the HAR itself is fetched here with
+ * the BrowserStack credentials from the environment, so they never cross the daemon wire. Only
+ * BrowserStack records a session HAR, so a different provider fails with a clear message.
+ */
+async function exportBrowserStackNetworkLogs(
+  executeCommand: ExecuteCommand,
+  options: NetworkOptions,
+): Promise<NetworkLogsExportResult> {
+  const outPath = requireNetworkExportOutPath(options.out);
+  const target = await resolveNetworkLogsTarget(executeCommand, options);
+  const credentials = requireBrowserStackCredentials();
+  const [{ fetchBrowserStackNetworkLogs }, { readVersion }, fs, path, { resolveUserPath }] =
+    await Promise.all([
+      import('@agent-device/provider-webdriver'),
+      import('@agent-device/host-kit/version'),
+      import('node:fs/promises'),
+      import('node:path'),
+      import('@agent-device/host-kit/file'),
+    ]);
+  const har = await fetchBrowserStackNetworkLogs(target.providerSessionId, {
+    clientVersion: readVersion(),
+    username: credentials.username,
+    accessKey: credentials.accessKey,
+  });
+  const resolvedPath = resolveUserPath(outPath);
+  await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+  await fs.writeFile(resolvedPath, `${JSON.stringify(har.har, null, 2)}\n`);
+  return {
+    path: resolvedPath,
+    provider: target.provider,
+    providerSessionId: target.providerSessionId,
+    entryCount: har.entryCount,
+    url: har.url,
+  };
+}
+
+function requireNetworkExportOutPath(out: string | undefined): string {
+  if (out && out.trim().length > 0) return out;
+  throw new AppError('INVALID_ARGS', 'network export requires --out <path>.');
+}
+
+function requireBrowserStackCredentials(): { username: string; accessKey: string } {
+  const username = process.env.BROWSERSTACK_USERNAME;
+  const accessKey = process.env.BROWSERSTACK_ACCESS_KEY;
+  if (username && accessKey) return { username, accessKey };
+  throw new AppError(
+    'INVALID_ARGS',
+    'network export requires BROWSERSTACK_USERNAME and BROWSERSTACK_ACCESS_KEY in the environment.',
+  );
+}
+
+/**
+ * Resolves the provider session to export from.
+ *
+ * A `--provider-session` id is used directly. Otherwise the daemon's artifact listing supplies the
+ * active lease's provider session id.
+ */
+async function resolveNetworkLogsTarget(
+  executeCommand: ExecuteCommand,
+  options: NetworkOptions,
+): Promise<{ provider: string; providerSessionId: string }> {
+  const provider = options.provider ?? NETWORK_LOGS_PROVIDER;
+  if (provider !== NETWORK_LOGS_PROVIDER) {
+    throw new AppError(
+      'INVALID_ARGS',
+      `network export supports the ${NETWORK_LOGS_PROVIDER} provider only.`,
+      {
+        provider,
+      },
+    );
+  }
+  if (options.providerSessionId) {
+    return { provider, providerSessionId: options.providerSessionId };
+  }
+  const artifacts = await executeCommand<AgentArtifactsResult>('artifacts', {
+    session: options.session,
+    provider,
+  });
+  const providerSessionId = readNetworkLogsSessionId(artifacts);
+  if (!providerSessionId) {
+    throw new AppError(
+      'INVALID_ARGS',
+      'network export needs an active BrowserStack lease or --provider-session <id>.',
+    );
+  }
+  return { provider, providerSessionId };
+}
+
+/** Reads the provider session id from a cloud artifacts listing, ignoring daemon artifact results. */
+function readNetworkLogsSessionId(result: AgentArtifactsResult): string | undefined {
+  if (!isCloudArtifactsResult(result)) return undefined;
+  if (result.providerSessionId) return result.providerSessionId;
+  const networkLogs = result.cloudArtifacts.find(
+    (artifact: CloudArtifact) => artifact.metadata?.format === 'har',
+  );
+  return networkLogs?.providerSessionId;
+}
+
+function isCloudArtifactsResult(result: AgentArtifactsResult): result is CloudArtifactsResult {
+  return 'cloudArtifacts' in result;
 }
 
 function panGestureInput(options: PanOptions): InternalRequestOptions & Record<string, unknown> {

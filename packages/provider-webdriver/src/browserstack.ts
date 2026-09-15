@@ -34,6 +34,14 @@ export const BROWSERSTACK_APP_UPLOAD_ENDPOINT =
   'https://api-cloud.browserstack.com/app-automate/upload';
 const BROWSERSTACK_SESSION_DETAILS_ENDPOINT =
   'https://api-cloud.browserstack.com/app-automate/sessions';
+/** REST path suffix that returns the session HAR, appended after `<sessions-endpoint>/<sessionId>`. */
+const BROWSERSTACK_NETWORK_LOGS_PATH_SUFFIX = 'networklogs';
+/**
+ * Network logs are build-scoped and served from the `api` host, not the `api-cloud` host the session
+ * details come from — the same shape as `appium_logs_url` and `device_logs_url`. The session-details
+ * endpoint returns an HTML 404 for this path, which reads as "not recorded" rather than "wrong URL".
+ */
+const BROWSERSTACK_BUILDS_ENDPOINT = 'https://api.browserstack.com/app-automate/builds';
 export const BROWSERSTACK_CAPABILITY_OVERRIDES = {
   install: {
     support: 'partial',
@@ -174,6 +182,80 @@ export async function listBrowserStackCloudArtifacts(
     artifacts,
     pendingMessage: 'BrowserStack artifacts are not ready yet.',
   });
+}
+
+export type BrowserStackNetworkLogsResult = {
+  /** REST URL the HAR was read from. */
+  url: string;
+  /** Parsed HAR document (`{ log: { entries: [...] } }`). */
+  har: unknown;
+  /** Count of `log.entries`, or 0 when the HAR carries none. */
+  entryCount: number;
+};
+
+/**
+ * Fetches the session network-log HAR from BrowserStack App Automate.
+ *
+ * Fails with a clear message, not a crash, when networkLogs was not recorded for the session. The
+ * endpoint returns a non-OK status or a non-HAR body in that case, so both are mapped to one error
+ * that names the connect flag.
+ */
+export async function fetchBrowserStackNetworkLogs(
+  sessionId: string,
+  options: BrowserStackSessionDetailsOptions,
+): Promise<BrowserStackNetworkLogsResult> {
+  const details = await fetchBrowserStackSessionDetails(sessionId, options);
+  const buildId = details.build_hashed_id;
+  if (typeof buildId !== 'string' || buildId.length === 0) {
+    throw new AppError(
+      'COMMAND_FAILED',
+      'BrowserStack session details named no build, so the network-log URL cannot be built.',
+      { providerSessionId: sessionId },
+    );
+  }
+  const url = browserStackNetworkLogsUrl(buildId, sessionId);
+  const response = await fetch(new URL(url), {
+    headers: {
+      ...agentDeviceRequestHeaders(options.clientVersion),
+      Authorization: basicAuthHeader(options),
+    },
+  });
+  if (!response.ok) {
+    throw new AppError('COMMAND_FAILED', networkLogsUnavailableMessage(response.status), {
+      status: response.status,
+      hint: 'Reconnect with connect browserstack --provider-network-logs to record a session HAR.',
+      providerSessionId: sessionId,
+    });
+  }
+  const har = (await response.json().catch(() => undefined)) as unknown;
+  const entryCount = readHarEntryCount(har);
+  if (entryCount === undefined) {
+    throw new AppError(
+      'COMMAND_FAILED',
+      'BrowserStack returned no network-log HAR for the session.',
+      {
+        hint: 'Reconnect with connect browserstack --provider-network-logs to record a session HAR.',
+        providerSessionId: sessionId,
+      },
+    );
+  }
+  return { url, har, entryCount };
+}
+
+/** 404 means the session ran without networkLogs; other statuses are lookup failures. */
+function networkLogsUnavailableMessage(status: number): string {
+  return status === 404
+    ? 'BrowserStack has no network-log HAR for the session; networkLogs was not enabled.'
+    : 'BrowserStack network-log HAR lookup failed.';
+}
+
+/** Returns the HAR entry count, or undefined when the body is not a HAR document. */
+function readHarEntryCount(har: unknown): number | undefined {
+  if (!har || typeof har !== 'object') return undefined;
+  const log = (har as { log?: unknown }).log;
+  if (!log || typeof log !== 'object') return undefined;
+  const entries = (log as { entries?: unknown }).entries;
+  return Array.isArray(entries) ? entries.length : undefined;
 }
 
 export type BrowserStackUploadOptions = {
@@ -340,7 +422,38 @@ function mapBrowserStackArtifacts(
       'provider-session',
       'Public session link',
     ),
+    // Always advertised: session details do not report whether networkLogs was captured, so the
+    // real availability is resolved at fetch time (`agent-device network export`). The URL needs
+    // Basic auth, unlike the pre-signed URLs above.
+    {
+      provider,
+      providerSessionId,
+      kind: 'raw',
+      name: 'Network logs (HAR)',
+      url: browserStackNetworkLogsUrl(String(details.build_hashed_id ?? ''), providerSessionId),
+      contentType: 'application/json',
+      extension: 'har',
+      availability: 'ready',
+      metadata: {
+        format: 'har',
+        requiresAuth: true,
+        exportCommand: 'agent-device network export --out <path>',
+      },
+    },
   ].filter((artifact): artifact is CloudArtifact => artifact !== undefined);
+}
+
+/**
+ * Builds the App Automate networklogs REST URL for a session.
+ *
+ * Build-scoped on the `api` host: `<builds>/<buildId>/sessions/<sessionId>/networklogs`.
+ */
+export function browserStackNetworkLogsUrl(
+  buildId: string,
+  sessionId: string,
+  endpoint: string | URL = BROWSERSTACK_BUILDS_ENDPOINT,
+): string {
+  return `${trimTrailingSlash(String(endpoint))}/${buildId}/sessions/${sessionId}/${BROWSERSTACK_NETWORK_LOGS_PATH_SUFFIX}`;
 }
 
 function browserStackUrlArtifact(

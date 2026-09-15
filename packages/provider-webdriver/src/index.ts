@@ -20,12 +20,10 @@ import type { CloudWebDriverRuntime } from './runtime.ts';
 export { CLOUD_WEBDRIVER_PROVIDERS, isCloudWebDriverProviderName };
 export { readAwsDeviceFarmRegionFromArn };
 export { rejectBrowserStackOnlyDeviceFeatures } from './browserstack-device-features.ts';
-export {
-  browserStackNetworkLogsUrl,
-  fetchBrowserStackNetworkLogs,
-  type BrowserStackNetworkLogsResult,
-  type BrowserStackSessionDetailsOptions,
-} from './browserstack.ts';
+// The CLI client reaches this through `import('@agent-device/provider-webdriver')` so the provider
+// package stays off the startup path, and a dynamic import is invisible to the static audit.
+// fallow-ignore-next-line unused-export
+export { fetchBrowserStackNetworkLogs } from './browserstack.ts';
 export type { CloudWebDriverKnownProviderName } from './providers.ts';
 export type { ProviderWebDriverDependencies, RunHostCommand } from './dependencies.ts';
 export type {

@@ -134,8 +134,15 @@ test('network export writes the BrowserStack HAR to a file with provider credent
   let requestedUrl: string | undefined;
   let authHeader: string | null | undefined;
   globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
-    requestedUrl = String(input);
+    const url = String(input);
     authHeader = new Headers(init?.headers).get('authorization');
+    // The HAR URL is build-scoped, so the export resolves the build from session details first.
+    if (!url.endsWith('/networklogs')) {
+      return new Response(JSON.stringify({ automation_session: { build_hashed_id: 'build-9' } }), {
+        status: 200,
+      });
+    }
+    requestedUrl = url;
     return new Response(JSON.stringify(har), { status: 200 });
   }) as typeof fetch;
 
@@ -153,7 +160,7 @@ test('network export writes the BrowserStack HAR to a file with provider credent
     assert.equal(result.calls.length, 0);
     assert.equal(
       requestedUrl,
-      'https://api-cloud.browserstack.com/app-automate/sessions/wd-1/networklogs',
+      'https://api.browserstack.com/app-automate/builds/build-9/sessions/wd-1/networklogs',
     );
     assert.equal(authHeader, `Basic ${Buffer.from('user:key').toString('base64')}`);
     assert.match(result.stdout, /Wrote 2 HAR entries to /);

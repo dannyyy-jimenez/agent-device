@@ -101,24 +101,87 @@ test('fetchBrowserStackNetworkLogs returns the HAR and entry count with basic au
   assert.equal(authHeader, `Basic ${Buffer.from('user:key').toString('base64')}`);
 });
 
-test('fetchBrowserStackNetworkLogs fails clearly when networkLogs was not enabled', async () => {
+// BrowserStack answers 404 while it finalises the HAR after the session ends, which is
+// indistinguishable by status from "networkLogs was never enabled". The fetch polls rather than
+// deciding on the first response.
+test('fetchBrowserStackNetworkLogs polls through the finalisation window', async () => {
+  const har = { log: { entries: [{ request: {} }] } };
+  let networkLogAttempts = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (!url.endsWith('/networklogs')) {
+      return new Response(JSON.stringify({ automation_session: { build_hashed_id: 'build-9' } }), {
+        status: 200,
+      });
+    }
+    networkLogAttempts += 1;
+    // Still finalising: BrowserStack answers 200 with an empty body, not a 404.
+    return networkLogAttempts === 1
+      ? new Response('', { status: 200 })
+      : new Response(JSON.stringify(har), { status: 200 });
+  };
+
+  const result = await fetchBrowserStackNetworkLogs('wd-1', {
+    ...NETWORK_LOGS_OPTIONS,
+    networkLogsTimeoutMs: 100,
+    networkLogsPollIntervalMs: 1,
+  });
+
+  assert.equal(networkLogAttempts, 2);
+  assert.equal(result.entryCount, 1);
+});
+
+test('fetchBrowserStackNetworkLogs names both causes once the wait is exhausted', async () => {
   globalThis.fetch = async (input) =>
     String(input).endsWith('/networklogs')
-      ? new Response('Not Found', { status: 404 })
+      ? new Response('', { status: 200 })
       : new Response(JSON.stringify({ automation_session: { build_hashed_id: 'build-9' } }), {
           status: 200,
         });
 
   await assert.rejects(
-    fetchBrowserStackNetworkLogs('wd-1', NETWORK_LOGS_OPTIONS),
+    fetchBrowserStackNetworkLogs('wd-1', {
+      ...NETWORK_LOGS_OPTIONS,
+      networkLogsTimeoutMs: 5,
+      networkLogsPollIntervalMs: 1,
+    }),
     (error: unknown) => {
       assert.ok(error instanceof AppError);
       assert.equal(error.code, 'COMMAND_FAILED');
-      assert.match(error.message, /networkLogs was not enabled/);
-      assert.match(String(error.details?.hint), /--provider-network-logs/);
+      // A status alone cannot tell the two apart, so the hint must not assert either one.
+      assert.match(String(error.details?.hint), /networkLogs was not enabled/);
+      assert.match(String(error.details?.hint), /has not finalised yet/);
       return true;
     },
   );
+});
+
+// A non-404 is a lookup failure, not a pending HAR — it must fail on the first response.
+test('fetchBrowserStackNetworkLogs does not poll a non-404 failure', async () => {
+  let networkLogAttempts = 0;
+  globalThis.fetch = async (input) => {
+    if (!String(input).endsWith('/networklogs')) {
+      return new Response(JSON.stringify({ automation_session: { build_hashed_id: 'build-9' } }), {
+        status: 200,
+      });
+    }
+    networkLogAttempts += 1;
+    return new Response('Server Error', { status: 500 });
+  };
+
+  await assert.rejects(
+    fetchBrowserStackNetworkLogs('wd-1', {
+      ...NETWORK_LOGS_OPTIONS,
+      networkLogsTimeoutMs: 1000,
+      networkLogsPollIntervalMs: 1,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AppError);
+      assert.match(error.message, /lookup failed/);
+      return true;
+    },
+  );
+  assert.equal(networkLogAttempts, 1);
 });
 
 test('cloud artifacts list advertises the network-log HAR entry', async () => {
@@ -137,6 +200,8 @@ test('cloud artifacts list advertises the network-log HAR entry', async () => {
   );
   assert.ok(networkLogs, 'network-log HAR artifact must be listed');
   assert.equal(networkLogs.kind, 'raw');
+  // Never claimed ready: BrowserStack finalises the HAR after the session ends.
+  assert.equal(networkLogs.availability, 'pending');
   assert.equal(networkLogs.url, browserStackNetworkLogsUrl('build-9', 'wd-1'));
   assert.equal(networkLogs.providerSessionId, 'wd-1');
   assert.equal(networkLogs.metadata?.requiresAuth, true);

@@ -36,6 +36,12 @@ const BROWSERSTACK_SESSION_DETAILS_ENDPOINT =
   'https://api-cloud.browserstack.com/app-automate/sessions';
 /** REST path suffix that returns the session HAR, appended after `<sessions-endpoint>/<sessionId>`. */
 const BROWSERSTACK_NETWORK_LOGS_PATH_SUFFIX = 'networklogs';
+/**
+ * Network logs are build-scoped and served from the `api` host, not the `api-cloud` host the session
+ * details come from — the same shape as `appium_logs_url` and `device_logs_url`. The session-details
+ * endpoint returns an HTML 404 for this path, which reads as "not recorded" rather than "wrong URL".
+ */
+const BROWSERSTACK_BUILDS_ENDPOINT = 'https://api.browserstack.com/app-automate/builds';
 export const BROWSERSTACK_CAPABILITY_OVERRIDES = {
   install: {
     support: 'partial',
@@ -198,10 +204,16 @@ export async function fetchBrowserStackNetworkLogs(
   sessionId: string,
   options: BrowserStackSessionDetailsOptions,
 ): Promise<BrowserStackNetworkLogsResult> {
-  const url = browserStackNetworkLogsUrl(
-    sessionId,
-    options.endpoint ?? BROWSERSTACK_SESSION_DETAILS_ENDPOINT,
-  );
+  const details = await fetchBrowserStackSessionDetails(sessionId, options);
+  const buildId = details.build_hashed_id;
+  if (typeof buildId !== 'string' || buildId.length === 0) {
+    throw new AppError(
+      'COMMAND_FAILED',
+      'BrowserStack session details named no build, so the network-log URL cannot be built.',
+      { providerSessionId: sessionId },
+    );
+  }
+  const url = browserStackNetworkLogsUrl(buildId, sessionId);
   const response = await fetch(new URL(url), {
     headers: {
       ...agentDeviceRequestHeaders(options.clientVersion),
@@ -418,7 +430,7 @@ function mapBrowserStackArtifacts(
       providerSessionId,
       kind: 'raw',
       name: 'Network logs (HAR)',
-      url: browserStackNetworkLogsUrl(providerSessionId),
+      url: browserStackNetworkLogsUrl(String(details.build_hashed_id ?? ''), providerSessionId),
       contentType: 'application/json',
       extension: 'har',
       availability: 'ready',
@@ -431,12 +443,17 @@ function mapBrowserStackArtifacts(
   ].filter((artifact): artifact is CloudArtifact => artifact !== undefined);
 }
 
-/** Builds the App Automate networklogs REST URL for a session, from the session-details base. */
+/**
+ * Builds the App Automate networklogs REST URL for a session.
+ *
+ * Build-scoped on the `api` host: `<builds>/<buildId>/sessions/<sessionId>/networklogs`.
+ */
 export function browserStackNetworkLogsUrl(
+  buildId: string,
   sessionId: string,
-  endpoint: string | URL = BROWSERSTACK_SESSION_DETAILS_ENDPOINT,
+  endpoint: string | URL = BROWSERSTACK_BUILDS_ENDPOINT,
 ): string {
-  return `${trimTrailingSlash(String(endpoint))}/${sessionId}/${BROWSERSTACK_NETWORK_LOGS_PATH_SUFFIX}`;
+  return `${trimTrailingSlash(String(endpoint))}/${buildId}/sessions/${sessionId}/${BROWSERSTACK_NETWORK_LOGS_PATH_SUFFIX}`;
 }
 
 function browserStackUrlArtifact(

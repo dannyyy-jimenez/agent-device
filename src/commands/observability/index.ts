@@ -27,7 +27,7 @@ const LOGS_COMMAND_NAME = 'logs';
 const EVENTS_COMMAND_NAME = 'events';
 const NETWORK_COMMAND_NAME = 'network';
 const AUDIO_COMMAND_NAME = 'audio';
-const NETWORK_ACTION_VALUES = ['dump', 'log'] as const;
+const NETWORK_ACTION_VALUES = ['dump', 'log', 'export'] as const;
 const AUDIO_ACTION_VALUES = ['probe'] as const;
 const AUDIO_PROBE_ACTION_VALUES = ['start', 'status', 'stop'] as const;
 
@@ -35,7 +35,8 @@ const logsCommandDescription =
   'Session app log info, start/stop streaming, diagnostics, and markers';
 const eventsCommandDescription =
   'Read the daemon-owned session event timeline as paged JSON-friendly entries';
-const networkCommandDescription = 'Dump recent HTTP(s) traffic parsed from the session app log';
+const networkCommandDescription =
+  'Dump recent HTTP(s) traffic from the session app log, or export the provider session network-log HAR';
 const audioCommandDescription =
   'Measure browser or host-rendered simulator/emulator audio as compact dBFS buckets. Start a probe before requesting its status or stopping it.';
 
@@ -65,6 +66,9 @@ export const networkCommandMetadata = defineFieldCommandMetadata(
     action: enumField(NETWORK_ACTION_VALUES),
     limit: integerField(),
     include: enumField(NETWORK_INCLUDE_MODES),
+    provider: stringField('export: cloud provider to read the HAR from (default: browserstack).'),
+    providerSessionId: stringField('export: provider session id (default: the active lease).'),
+    out: stringField('export: file path the HAR is written to.'),
   },
 );
 
@@ -95,10 +99,10 @@ const eventsCliSchema = {
 
 const networkCliSchema = {
   usageOverride:
-    'network dump [limit] [summary|headers|body|all] [--include summary|headers|body|all] | network log [limit] [summary|headers|body|all] [--include summary|headers|body|all]',
+    'network dump [limit] [summary|headers|body|all] [--include summary|headers|body|all] | network log [limit] [summary|headers|body|all] [--include summary|headers|body|all] | network export --out <path> [--provider-session <id>] [--provider <name>]',
   listUsageOverride: 'network',
-  positionalArgs: ['dump|log', 'limit?', 'include?'],
-  allowedFlags: ['networkInclude'],
+  positionalArgs: ['dump|log|export', 'limit?', 'include?'],
+  allowedFlags: ['networkInclude', 'out', 'provider', 'providerSessionId'],
 } as const satisfies CommandSchemaOverride;
 
 const audioCliSchema = {
@@ -126,6 +130,10 @@ export const networkCliReader: CliReader = (positionals, flags) => ({
   action: readNetworkAction(positionals[0]),
   limit: optionalCliNumber(positionals[1]),
   include: flags.networkInclude ?? readNetworkInclude(positionals[2]),
+  // export-only: the client method reads these; dump/log ignore them.
+  out: flags.out,
+  provider: flags.provider,
+  providerSessionId: flags.providerSessionId,
 });
 
 export const audioCliReader: CliReader = (positionals, flags) => ({
@@ -238,10 +246,10 @@ function readLogsAction(value: string | undefined): LogAction | undefined {
   });
 }
 
-function readNetworkAction(value: string | undefined): 'dump' | 'log' | undefined {
+function readNetworkAction(value: string | undefined): 'dump' | 'log' | 'export' | undefined {
   if (value === undefined) return undefined;
-  if (value === 'dump' || value === 'log') return value;
-  throw new AppError('INVALID_ARGS', 'network requires dump or log');
+  if (value === 'dump' || value === 'log' || value === 'export') return value;
+  throw new AppError('INVALID_ARGS', 'network requires dump, log, or export');
 }
 
 function readNetworkInclude(value: string | undefined): NetworkIncludeMode | undefined {

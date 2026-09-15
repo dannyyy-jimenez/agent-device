@@ -66,6 +66,11 @@ type NetworkCliResult = {
   matchedLines?: number;
   entries?: readonly NetworkCliEntry[];
   notes?: readonly string[];
+  // `network export` result fields (HAR written to a file).
+  entryCount?: number;
+  provider?: string;
+  providerSessionId?: string;
+  url?: string;
 };
 
 type AudioCliResult = {
@@ -110,6 +115,16 @@ function eventsCliOutput(data: EventsCliResult): CliOutput {
 }
 
 function networkCliOutput(data: NetworkCliResult): CliOutput {
+  // `network export` returns a written HAR file, not parsed log entries.
+  if (data.entryCount !== undefined && data.path) {
+    return {
+      data,
+      text: `Wrote ${data.entryCount} HAR entr${data.entryCount === 1 ? 'y' : 'ies'} to ${data.path}`,
+      stderr: joinDefinedLines([
+        formatKeyValueFields(data, ['provider', 'providerSessionId'] as const),
+      ]),
+    };
+  }
   const lines: string[] = [];
   const entries = data.entries ?? [];
   if (data.path) lines.push(data.path);

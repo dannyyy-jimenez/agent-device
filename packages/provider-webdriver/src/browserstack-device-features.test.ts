@@ -74,17 +74,21 @@ test('local tunnel features project onto their BrowserStack vendor capability ke
   );
 });
 
-test('network logs opt-in projects onto the networkLogs vendor capability key', () => {
-  // The QA agent turns this on at connect so BrowserStack records a HAR it can export afterwards.
+test('network logs opt-in captures response content in the HAR', () => {
+  // BrowserStack records request metadata without this nested option.
   assert.deepEqual(
     buildBrowserStackDeviceFeatureCapabilities({ providerNetworkLogs: true }, 'ios'),
     {
       networkLogs: true,
+      networkLogsOptions: { captureContent: true },
     },
   );
   assert.deepEqual(
     buildBrowserStackDeviceFeatureCapabilities({ providerNetworkLogs: true }, 'android'),
-    { networkLogs: true },
+    {
+      networkLogs: true,
+      networkLogsOptions: { captureContent: true },
+    },
   );
 });
 

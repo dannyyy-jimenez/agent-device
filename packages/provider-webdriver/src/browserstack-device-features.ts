@@ -119,8 +119,7 @@ export const BROWSERSTACK_DEVICE_FEATURE_SPECS: readonly BrowserStackDeviceFeatu
     type: 'string',
   },
   {
-    // Records a HAR of the session network traffic. Retrieve the HAR after the session with
-    // `agent-device network export`; the App Automate networklogs REST endpoint returns it.
+    // Records a HAR with response content. BrowserStack omits content unless this option is set.
     field: 'providerNetworkLogs',
     capability: 'networkLogs',
     flag: '--provider-network-logs',
@@ -146,6 +145,9 @@ export function buildBrowserStackDeviceFeatureCapabilities(
     if (value === undefined || value === false || value === '') continue;
     requireSupportedPlatform(spec, platform);
     capabilities[spec.capability] = spec.type === 'negated-boolean' ? false : value;
+  }
+  if (fields.providerNetworkLogs) {
+    capabilities.networkLogsOptions = { captureContent: true };
   }
   return capabilities;
 }

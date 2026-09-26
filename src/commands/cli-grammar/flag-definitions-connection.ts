@@ -237,6 +237,14 @@ export const CONNECTION_FLAG_DEFINITIONS: readonly FlagDefinition[] = [
       'Bind the session to a named local tunnel, matching BrowserStackLocal --local-identifier. Requires --provider-local',
   },
   {
+    key: 'providerNetworkLogs',
+    names: ['--provider-network-logs'],
+    type: 'boolean',
+    usageLabel: '--provider-network-logs',
+    usageDescription:
+      'Record a HAR of BrowserStack session network traffic. Retrieve it after the session with agent-device network export',
+  },
+  {
     key: 'awsProjectArn',
     names: ['--aws-project-arn'],
     type: 'string',

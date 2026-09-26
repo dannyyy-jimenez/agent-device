@@ -95,6 +95,7 @@ export const REMOTE_CONFIG_FIELD_SPECS = [
   { key: 'providerNoResignApp', type: 'boolean' },
   { key: 'providerLocal', type: 'boolean' },
   { key: 'providerLocalIdentifier', type: 'string' },
+  { key: 'providerNetworkLogs', type: 'boolean' },
   { key: 'awsProjectArn', type: 'string' },
   { key: 'awsDeviceArn', type: 'string' },
   { key: 'awsAppArn', type: 'string' },

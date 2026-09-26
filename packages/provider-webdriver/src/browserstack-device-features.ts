@@ -27,6 +27,7 @@ export type BrowserStackDeviceFeatureFields = Pick<
   | 'providerNoResignApp'
   | 'providerLocal'
   | 'providerLocalIdentifier'
+  | 'providerNetworkLogs'
 >;
 
 type BrowserStackDeviceFeatureSpec = {
@@ -117,6 +118,13 @@ export const BROWSERSTACK_DEVICE_FEATURE_SPECS: readonly BrowserStackDeviceFeatu
     flag: '--provider-local-identifier',
     type: 'string',
   },
+  {
+    // Records a HAR with response content. BrowserStack omits content unless this option is set.
+    field: 'providerNetworkLogs',
+    capability: 'networkLogs',
+    flag: '--provider-network-logs',
+    type: 'boolean',
+  },
 ];
 
 /**
@@ -137,6 +145,9 @@ export function buildBrowserStackDeviceFeatureCapabilities(
     if (value === undefined || value === false || value === '') continue;
     requireSupportedPlatform(spec, platform);
     capabilities[spec.capability] = spec.type === 'negated-boolean' ? false : value;
+  }
+  if (fields.providerNetworkLogs) {
+    capabilities.networkLogsOptions = { captureContent: true };
   }
   return capabilities;
 }
@@ -218,16 +229,24 @@ function assignStringField(
     fields.providerDeviceOrientation = requireDeviceOrientation(spec, value);
     return;
   }
+  // Boolean fields never carry a string value; skip them so the string assignment below stays typed.
   if (spec.field === 'providerNoResignApp') return;
   if (spec.field === 'providerLocal') return;
+  if (spec.field === 'providerNetworkLogs') return;
   fields[spec.field] = value;
 }
 
+/**
+ * Sets a boolean device-feature field from a `type: 'boolean'` spec.
+ *
+ * Table-driven: a new boolean spec row needs a case here, not a branch in the reader loop.
+ */
 function assignBooleanField(
   fields: BrowserStackDeviceFeatureFields,
   spec: BrowserStackDeviceFeatureSpec,
 ): void {
   if (spec.field === 'providerLocal') fields.providerLocal = true;
+  if (spec.field === 'providerNetworkLogs') fields.providerNetworkLogs = true;
 }
 
 function requireDeviceOrientation(

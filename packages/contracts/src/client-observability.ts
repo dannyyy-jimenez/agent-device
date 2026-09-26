@@ -30,9 +30,23 @@ export type EventsOptions = AgentDeviceRequestOverrides & {
 };
 
 export type NetworkOptions = DeviceCommandBaseOptions & {
-  action?: 'dump' | 'log';
+  action?: 'dump' | 'log' | 'export';
   limit?: number;
   include?: NetworkIncludeMode;
+  /** `export` only: cloud provider and session to read the HAR from (default: the active lease). */
+  provider?: string;
+  providerSessionId?: string;
+  /** `export` only: file path the HAR is written to. */
+  out?: string;
+};
+
+/** Result of `network export`: where the HAR was written and what it contained. */
+export type NetworkLogsExportResult = {
+  path: string;
+  provider: string;
+  providerSessionId: string;
+  entryCount: number;
+  url: string;
 };
 
 export type AudioOptions = DeviceCommandBaseOptions & {

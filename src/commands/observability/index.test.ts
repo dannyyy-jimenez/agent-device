@@ -163,6 +163,35 @@ describe('observability command interface', () => {
     });
   });
 
+  test('reads network export target and output path', () => {
+    expect(
+      networkCliReader(['export'], {
+        out: '/tmp/session.har',
+        providerSessionId: 'wd-1',
+      } as CliFlags),
+    ).toMatchObject({
+      action: 'export',
+      out: '/tmp/session.har',
+      providerSessionId: 'wd-1',
+    });
+  });
+
+  test('formats a network export result as a written-file summary', () => {
+    const output = observabilityCliOutputFormatters.network({
+      input: {},
+      result: {
+        path: '/tmp/session.har',
+        provider: 'browserstack',
+        providerSessionId: 'wd-1',
+        entryCount: 2,
+        url: 'https://api-cloud.browserstack.com/app-automate/sessions/wd-1/networklogs',
+      },
+    });
+
+    expect(output.text).toBe('Wrote 2 HAR entries to /tmp/session.har');
+    expect(output.stderr).toContain('providerSessionId=wd-1');
+  });
+
   test('writes network include as daemon flag', () => {
     expect(networkDaemonWriter({ action: 'dump', limit: 25, include: 'body' })).toMatchObject({
       command: 'network',

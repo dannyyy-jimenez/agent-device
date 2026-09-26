@@ -70,7 +70,8 @@ test('BrowserStack facade prepares capabilities, uploads apps, and returns artif
         const release = await runtime.leaseLifecycle.release?.(lease);
         assert.equal(
           (release?.cloudArtifacts as CloudArtifactsResult | undefined)?.cloudArtifacts.length,
-          5,
+          // video, appium-log, device-log, browser dashboard, public link, network-log HAR.
+          6,
         );
       } finally {
         await runtime.shutdown();
@@ -297,7 +298,7 @@ test('facade artifact lookup uses released provider ids without allocating a run
     );
     assert.deepEqual(
       result?.cloudArtifacts.map((artifact) => artifact.kind),
-      ['video', 'appium-log', 'device-log', 'provider-session', 'provider-session'],
+      ['video', 'appium-log', 'device-log', 'provider-session', 'provider-session', 'raw'],
     );
     assertAgentDeviceHeaders(server.calls[0]?.headers);
   });

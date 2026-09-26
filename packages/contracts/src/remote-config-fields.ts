@@ -36,6 +36,7 @@ export type CloudProviderProfileFields = {
   providerNoResignApp?: boolean;
   providerLocal?: boolean;
   providerLocalIdentifier?: string;
+  providerNetworkLogs?: boolean;
   awsProjectArn?: string;
   awsDeviceArn?: string;
   awsAppArn?: string;

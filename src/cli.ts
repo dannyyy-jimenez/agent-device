@@ -469,6 +469,7 @@ function buildClientConfig(ctx: CliRunContext): AgentDeviceClientConfig {
     providerNoResignApp: currentFlags.providerNoResignApp,
     providerLocal: currentFlags.providerLocal,
     providerLocalIdentifier: currentFlags.providerLocalIdentifier,
+    providerNetworkLogs: currentFlags.providerNetworkLogs,
     awsProjectArn: currentFlags.awsProjectArn,
     awsDeviceArn: currentFlags.awsDeviceArn,
     awsAppArn: currentFlags.awsAppArn,

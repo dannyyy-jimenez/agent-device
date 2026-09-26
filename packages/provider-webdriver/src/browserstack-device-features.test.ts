@@ -21,6 +21,7 @@ const DEVICE_FEATURE_FIELDS = [
   'providerNoResignApp',
   'providerLocal',
   'providerLocalIdentifier',
+  'providerNetworkLogs',
 ] as const;
 
 test('every device-feature field maps to exactly one capability spec', () => {
@@ -71,6 +72,32 @@ test('local tunnel features project onto their BrowserStack vendor capability ke
     ),
     { local: true, localIdentifier: 'mbdp-proof' },
   );
+});
+
+test('network logs opt-in captures response content in the HAR', () => {
+  // BrowserStack records request metadata without this nested option.
+  assert.deepEqual(
+    buildBrowserStackDeviceFeatureCapabilities({ providerNetworkLogs: true }, 'ios'),
+    {
+      networkLogs: true,
+      networkLogsOptions: { captureContent: true },
+    },
+  );
+  assert.deepEqual(
+    buildBrowserStackDeviceFeatureCapabilities({ providerNetworkLogs: true }, 'android'),
+    {
+      networkLogs: true,
+      networkLogsOptions: { captureContent: true },
+    },
+  );
+});
+
+test('the network logs flag is read off an untyped daemon request flag bag', () => {
+  assert.deepEqual(readBrowserStackDeviceFeatureFields({ providerNetworkLogs: true }), {
+    providerNetworkLogs: true,
+  });
+  // A non-boolean value is treated as unset, matching the other boolean flags.
+  assert.deepEqual(readBrowserStackDeviceFeatureFields({ providerNetworkLogs: 'yes' }), {});
 });
 
 test('--provider-local-identifier is rejected without --provider-local', () => {

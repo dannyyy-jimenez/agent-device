@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout } from 'node:timers/promises';
 import type { CloudArtifact, CloudArtifactsResult } from '@agent-device/contracts/observability';
 import {
   createCloudWebDriverCapabilities,
@@ -34,6 +35,14 @@ export const BROWSERSTACK_APP_UPLOAD_ENDPOINT =
   'https://api-cloud.browserstack.com/app-automate/upload';
 const BROWSERSTACK_SESSION_DETAILS_ENDPOINT =
   'https://api-cloud.browserstack.com/app-automate/sessions';
+/** REST path suffix that returns the session HAR, appended after `<sessions-endpoint>/<sessionId>`. */
+const BROWSERSTACK_NETWORK_LOGS_PATH_SUFFIX = 'networklogs';
+/**
+ * Network logs are build-scoped and served from the `api` host, not the `api-cloud` host the session
+ * details come from — the same shape as `appium_logs_url` and `device_logs_url`. The session-details
+ * endpoint returns an HTML 404 for this path, which reads as "not recorded" rather than "wrong URL".
+ */
+const BROWSERSTACK_BUILDS_ENDPOINT = 'https://api.browserstack.com/app-automate/builds';
 export const BROWSERSTACK_CAPABILITY_OVERRIDES = {
   install: {
     support: 'partial',
@@ -158,6 +167,9 @@ export type BrowserStackSessionDetailsOptions = {
   username: string;
   accessKey: string;
   endpoint?: string | URL;
+  /** Bounds the post-session wait for BrowserStack to finalise the network-log HAR. */
+  networkLogsTimeoutMs?: number;
+  networkLogsPollIntervalMs?: number;
 };
 
 export async function listBrowserStackCloudArtifacts(
@@ -174,6 +186,109 @@ export async function listBrowserStackCloudArtifacts(
     artifacts,
     pendingMessage: 'BrowserStack artifacts are not ready yet.',
   });
+}
+
+export type BrowserStackNetworkLogsResult = {
+  /** REST URL the HAR was read from. */
+  url: string;
+  /** Parsed HAR document (`{ log: { entries: [...] } }`). */
+  har: unknown;
+  /** Count of `log.entries`, or 0 when the HAR carries none. */
+  entryCount: number;
+};
+
+/**
+ * BrowserStack finalises the session HAR some time after the session ends. Until it does, the
+ * endpoint answers `200` with an empty `text/plain` body rather than a 404 — a pending state that no
+ * status code distinguishes from "networkLogs was never enabled". The fetch polls before deciding,
+ * and the terminal error names both causes instead of asserting the capability was off.
+ */
+const NETWORK_LOGS_FINALISE_TIMEOUT_MS = 90_000;
+const NETWORK_LOGS_POLL_INTERVAL_MS = 3_000;
+
+/**
+ * Fetches the session network-log HAR from BrowserStack App Automate.
+ *
+ * Polls while the provider reports 404, which covers the post-session finalisation window. Any
+ * other status is a lookup failure and fails immediately.
+ */
+export async function fetchBrowserStackNetworkLogs(
+  sessionId: string,
+  options: BrowserStackSessionDetailsOptions,
+): Promise<BrowserStackNetworkLogsResult> {
+  const buildId = await requireBrowserStackBuildId(sessionId, options);
+  const url = browserStackNetworkLogsUrl(buildId, sessionId);
+  const har = await pollBrowserStackNetworkLogs(url, sessionId, options);
+  return { url, har, entryCount: readHarEntryCount(har) ?? 0 };
+}
+
+async function requireBrowserStackBuildId(
+  sessionId: string,
+  options: BrowserStackSessionDetailsOptions,
+): Promise<string> {
+  const details = await fetchBrowserStackSessionDetails(sessionId, options);
+  const buildId = details.build_hashed_id;
+  if (typeof buildId !== 'string' || buildId.length === 0) {
+    throw new AppError(
+      'COMMAND_FAILED',
+      'BrowserStack session details named no build, so the network-log URL cannot be built.',
+      { providerSessionId: sessionId },
+    );
+  }
+  return buildId;
+}
+
+/**
+ * Polls until the provider serves a parseable HAR.
+ *
+ * While BrowserStack is still finalising, the endpoint answers `200` with an empty `text/plain`
+ * body — not a 404, and not a HAR. Both that and a 404 are treated as "not yet"; any other status
+ * is a lookup failure and fails on the first response.
+ */
+async function pollBrowserStackNetworkLogs(
+  url: string,
+  sessionId: string,
+  options: BrowserStackSessionDetailsOptions,
+): Promise<unknown> {
+  const interval = options.networkLogsPollIntervalMs ?? NETWORK_LOGS_POLL_INTERVAL_MS;
+  const deadline = Date.now() + (options.networkLogsTimeoutMs ?? NETWORK_LOGS_FINALISE_TIMEOUT_MS);
+  for (;;) {
+    const response = await fetch(new URL(url), {
+      headers: {
+        ...agentDeviceRequestHeaders(options.clientVersion),
+        Authorization: basicAuthHeader(options),
+      },
+    });
+    if (!response.ok && response.status !== 404) {
+      throw new AppError('COMMAND_FAILED', 'BrowserStack network-log HAR lookup failed.', {
+        status: response.status,
+        providerSessionId: sessionId,
+      });
+    }
+    const har = response.ok
+      ? ((await response.json().catch(() => undefined)) as unknown)
+      : undefined;
+    if (readHarEntryCount(har) !== undefined) return har;
+    if (Date.now() >= deadline) throw networkLogsNotFinalisedError(sessionId);
+    await setTimeout(interval);
+  }
+}
+
+/** Names both causes: neither the status nor the empty body can tell them apart. */
+function networkLogsNotFinalisedError(sessionId: string): AppError {
+  return new AppError('COMMAND_FAILED', 'BrowserStack served no network-log HAR for the session.', {
+    hint: 'Either networkLogs was not enabled — reconnect with connect browserstack --provider-network-logs — or the HAR has not finalised yet, so retry the export.',
+    providerSessionId: sessionId,
+  });
+}
+
+/** Returns the HAR entry count, or undefined when the body is not a HAR document. */
+function readHarEntryCount(har: unknown): number | undefined {
+  if (!har || typeof har !== 'object') return undefined;
+  const log = (har as { log?: unknown }).log;
+  if (!log || typeof log !== 'object') return undefined;
+  const entries = (log as { entries?: unknown }).entries;
+  return Array.isArray(entries) ? entries.length : undefined;
 }
 
 export type BrowserStackUploadOptions = {
@@ -340,7 +455,39 @@ function mapBrowserStackArtifacts(
       'provider-session',
       'Public session link',
     ),
+    // Always advertised, never claimed ready: session details do not report whether networkLogs was
+    // captured, and BrowserStack finalises the HAR some time after the session ends. Real
+    // availability is resolved at fetch time by `agent-device network export`, which polls. The URL
+    // needs Basic auth, unlike the pre-signed URLs above.
+    {
+      provider,
+      providerSessionId,
+      kind: 'raw',
+      name: 'Network logs (HAR)',
+      url: browserStackNetworkLogsUrl(String(details.build_hashed_id ?? ''), providerSessionId),
+      contentType: 'application/json',
+      extension: 'har',
+      availability: 'pending',
+      metadata: {
+        format: 'har',
+        requiresAuth: true,
+        exportCommand: 'agent-device network export --out <path>',
+      },
+    },
   ].filter((artifact): artifact is CloudArtifact => artifact !== undefined);
+}
+
+/**
+ * Builds the App Automate networklogs REST URL for a session.
+ *
+ * Build-scoped on the `api` host: `<builds>/<buildId>/sessions/<sessionId>/networklogs`.
+ */
+export function browserStackNetworkLogsUrl(
+  buildId: string,
+  sessionId: string,
+  endpoint: string | URL = BROWSERSTACK_BUILDS_ENDPOINT,
+): string {
+  return `${trimTrailingSlash(String(endpoint))}/${buildId}/sessions/${sessionId}/${BROWSERSTACK_NETWORK_LOGS_PATH_SUFFIX}`;
 }
 
 function browserStackUrlArtifact(

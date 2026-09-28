@@ -78,6 +78,7 @@ export type {
   AudioOptions,
   EventsOptions,
   LogsOptions,
+  NetworkLogsExportResult,
   NetworkOptions,
   PerfOptions,
   RecordOptions,

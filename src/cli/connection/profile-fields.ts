@@ -23,6 +23,7 @@ export function readCloudDeviceFeatureProfileFields(
   | 'providerNoResignApp'
   | 'providerLocal'
   | 'providerLocalIdentifier'
+  | 'providerNetworkLogs'
 > {
   return {
     providerDeviceOrientation: flags.providerDeviceOrientation,
@@ -35,6 +36,7 @@ export function readCloudDeviceFeatureProfileFields(
     providerNoResignApp: flags.providerNoResignApp,
     providerLocal: flags.providerLocal,
     providerLocalIdentifier: flags.providerLocalIdentifier,
+    providerNetworkLogs: flags.providerNetworkLogs,
   };
 }
 
